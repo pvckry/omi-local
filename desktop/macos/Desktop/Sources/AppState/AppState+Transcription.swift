@@ -50,10 +50,14 @@ extension AppState {
     // shortcuts. Refuse to start and surface the upgrade popup.
     if LocalOnlyConfiguration.isEnabled {
       guard Self.isAppleSilicon else {
-        showAlert(title: "Local Transcription Unavailable", message: "This build requires Apple Silicon for on-device transcription.")
+        showAlert(
+          title: "Local Transcription Unavailable",
+          message: "This build requires Apple Silicon for on-device transcription.")
         return
       }
-    } else if blockIfPaywalled() { return }
+    } else if blockIfPaywalled() {
+      return
+    }
 
     // Use provided source or fall back to current setting
     let effectiveSource = source ?? audioSource
@@ -99,7 +103,8 @@ extension AppState {
         environmentForceCloud: ProcessInfo.processInfo.environment["OMI_FORCE_CLOUD_STT"] == "1",
         userDefaultsForceCloud: UserDefaults.standard.bool(forKey: "forceCloudSTT")
       )
-      let preferLocalOnBasic = LocalOnlyConfiguration.isEnabled
+      let preferLocalOnBasic =
+        LocalOnlyConfiguration.isEnabled
         || SubscriptionEntitlementService.shared.cachedDecisionForManagedProactivity() == .planGated
       if !LocalOnlyConfiguration.isEnabled {
         Task { _ = await SubscriptionEntitlementService.shared.snapshot() }

@@ -19,9 +19,11 @@ public enum DeviceOnlyCompletion {
   /// rows, the captured stop time, or the fact that no server has received it.
   @discardableResult
   public static func complete(in db: Database, sessionID: Int64, now: Date) throws -> Bool {
-    guard let row = try Row.fetchOne(
-      db, sql: "SELECT * FROM transcription_sessions WHERE id = ?", arguments: [sessionID]
-    ) else { throw Failure.sessionNotFound }
+    guard
+      let row = try Row.fetchOne(
+        db, sql: "SELECT * FROM transcription_sessions WHERE id = ?", arguments: [sessionID]
+      )
+    else { throw Failure.sessionNotFound }
 
     let savedStrategy: String? = row["finalizationStrategy"]
     guard savedStrategy == strategy else { throw Failure.notDeviceOnly }

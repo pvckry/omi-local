@@ -10,18 +10,19 @@ struct DeviceOnlyCompletionChecks {
     try db.write { database in
       // Minimal projection of Omi's existing schema. App-level tests additionally
       // exercise its real migrations and TranscriptionStorage adapter.
-      try database.execute(sql: """
-        CREATE TABLE transcription_sessions (
-          id INTEGER PRIMARY KEY, startedAt DATETIME NOT NULL, finishedAt DATETIME,
-          status TEXT NOT NULL DEFAULT 'pending_upload', conversationStatus TEXT DEFAULT 'in_progress',
-          finalizationStrategy TEXT DEFAULT 'device_only', backendId TEXT,
-          backendSynced BOOLEAN NOT NULL DEFAULT 0, clientConversationId TEXT DEFAULT 'local-test',
-          deleted BOOLEAN NOT NULL DEFAULT 0, cacheCompleteness TEXT DEFAULT 'list',
-          retryCount INTEGER DEFAULT 2, lastError TEXT DEFAULT 'interrupted',
-          finalizationCompletedAt DATETIME, updatedAt DATETIME
-        );
-        CREATE TABLE transcription_segments (sessionId INTEGER, text TEXT, startTime DOUBLE, endTime DOUBLE);
-        """)
+      try database.execute(
+        sql: """
+          CREATE TABLE transcription_sessions (
+            id INTEGER PRIMARY KEY, startedAt DATETIME NOT NULL, finishedAt DATETIME,
+            status TEXT NOT NULL DEFAULT 'pending_upload', conversationStatus TEXT DEFAULT 'in_progress',
+            finalizationStrategy TEXT DEFAULT 'device_only', backendId TEXT,
+            backendSynced BOOLEAN NOT NULL DEFAULT 0, clientConversationId TEXT DEFAULT 'local-test',
+            deleted BOOLEAN NOT NULL DEFAULT 0, cacheCompleteness TEXT DEFAULT 'list',
+            retryCount INTEGER DEFAULT 2, lastError TEXT DEFAULT 'interrupted',
+            finalizationCompletedAt DATETIME, updatedAt DATETIME
+          );
+          CREATE TABLE transcription_segments (sessionId INTEGER, text TEXT, startTime DOUBLE, endTime DOUBLE);
+          """)
       try database.execute(
         sql: "INSERT INTO transcription_sessions (id, startedAt, finishedAt) VALUES (1, ?, ?)",
         arguments: [start, start.addingTimeInterval(60)]
@@ -49,7 +50,8 @@ struct DeviceOnlyCompletionChecks {
       try expectNil(row["backendId"] as String?)
       try expectEqual(row["retryCount"] as Int, 0)
       try expectNil(row["lastError"] as String?)
-      try expectEqual(try String.fetchOne(database, sql: "SELECT text FROM transcription_segments"), "Original transcript")
+      try expectEqual(
+        try String.fetchOne(database, sql: "SELECT text FROM transcription_segments"), "Original transcript")
       try expectEqual(try Double.fetchOne(database, sql: "SELECT endTime FROM transcription_segments"), 55)
     }
   }
@@ -64,11 +66,13 @@ struct DeviceOnlyCompletionChecks {
     try db.write { try DeviceOnlyCompletion.complete(in: $0, sessionID: 1, now: completedAt) }
     try db.close()
     let reopened = try DatabaseQueue(path: path)
-    try expectFalse(try reopened.write {
-      try DeviceOnlyCompletion.complete(in: $0, sessionID: 1, now: completedAt.addingTimeInterval(3600))
-    })
+    try expectFalse(
+      try reopened.write {
+        try DeviceOnlyCompletion.complete(in: $0, sessionID: 1, now: completedAt.addingTimeInterval(3600))
+      })
     try reopened.read { database in
-      try expectEqual(try Date.fetchOne(database, sql: "SELECT finalizationCompletedAt FROM transcription_sessions"), completedAt)
+      try expectEqual(
+        try Date.fetchOne(database, sql: "SELECT finalizationCompletedAt FROM transcription_sessions"), completedAt)
       try expectEqual(try Int.fetchOne(database, sql: "SELECT COUNT(*) FROM transcription_segments"), 1)
     }
     try reopened.close()
@@ -92,9 +96,11 @@ struct DeviceOnlyCompletionChecks {
       let db = try makeDatabase()
       try db.write { try $0.execute(sql: "UPDATE transcription_sessions SET \(assignment)") }
       let before = try db.read { try Row.fetchAll($0, sql: "SELECT * FROM transcription_sessions") }
-      try expectFailure(try db.write {
-        try DeviceOnlyCompletion.complete(in: $0, sessionID: 1, now: start.addingTimeInterval(600))
-      }) { try expectEqual($0 as? DeviceOnlyCompletion.Failure, expected, assignment) }
+      try expectFailure(
+        try db.write {
+          try DeviceOnlyCompletion.complete(in: $0, sessionID: 1, now: start.addingTimeInterval(600))
+        }
+      ) { try expectEqual($0 as? DeviceOnlyCompletion.Failure, expected, assignment) }
       let after = try db.read { try Row.fetchAll($0, sql: "SELECT * FROM transcription_sessions") }
       try expectEqual(before, after, assignment)
     }
@@ -102,22 +108,27 @@ struct DeviceOnlyCompletionChecks {
 
   func testMissingSessionIsNotReportedAsCompleted() throws {
     let db = try makeDatabase()
-    try expectFailure(try db.write {
-      try DeviceOnlyCompletion.complete(in: $0, sessionID: 99, now: start.addingTimeInterval(600))
-    }) { try expectEqual($0 as? DeviceOnlyCompletion.Failure, .sessionNotFound) }
+    try expectFailure(
+      try db.write {
+        try DeviceOnlyCompletion.complete(in: $0, sessionID: 99, now: start.addingTimeInterval(600))
+      }
+    ) { try expectEqual($0 as? DeviceOnlyCompletion.Failure, .sessionNotFound) }
   }
 
   func testTransactionRollbackLeavesRecordingRetryable() throws {
     enum SimulatedCrash: Error { case beforeCommit }
     let db = try makeDatabase()
-    try expectFailure(try db.write { database in
-      try DeviceOnlyCompletion.complete(in: database, sessionID: 1, now: start.addingTimeInterval(600))
-      throw SimulatedCrash.beforeCommit
-    })
-    try expectEqual(try db.read { try String.fetchOne($0, sql: "SELECT status FROM transcription_sessions") }, "pending_upload")
-    try expectTrue(try db.write {
-      try DeviceOnlyCompletion.complete(in: $0, sessionID: 1, now: start.addingTimeInterval(700))
-    })
+    try expectFailure(
+      try db.write { database in
+        try DeviceOnlyCompletion.complete(in: database, sessionID: 1, now: start.addingTimeInterval(600))
+        throw SimulatedCrash.beforeCommit
+      })
+    try expectEqual(
+      try db.read { try String.fetchOne($0, sql: "SELECT status FROM transcription_sessions") }, "pending_upload")
+    try expectTrue(
+      try db.write {
+        try DeviceOnlyCompletion.complete(in: $0, sessionID: 1, now: start.addingTimeInterval(700))
+      })
   }
 }
 

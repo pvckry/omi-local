@@ -1,6 +1,6 @@
 import Foundation
-import OmiLocalCore
 @preconcurrency import GRDB
+import OmiLocalCore
 
 private func withConversationCacheScope<T>(
   _ scope: ConversationCacheWriteScope?,
