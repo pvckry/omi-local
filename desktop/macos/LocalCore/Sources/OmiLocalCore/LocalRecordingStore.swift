@@ -9,6 +9,7 @@ public final class LocalRecordingStore: @unchecked Sendable {
     public let startedAt: Date
     public let status: String
     public let systemAudio: Bool
+    public let transcriptStatus: String
   }
 
   public let root: URL
@@ -43,6 +44,19 @@ public final class LocalRecordingStore: @unchecked Sendable {
             );
             """)
         try db.execute(sql: "INSERT INTO workspace VALUES (?)", arguments: [UUID().uuidString])
+      }
+      migrator.registerMigration("local-transcripts-v1") { db in
+        try db.execute(
+          sql: """
+            ALTER TABLE recordings ADD COLUMN transcriptStatus TEXT NOT NULL DEFAULT 'not_requested';
+            CREATE TABLE local_transcripts (
+              id TEXT PRIMARY KEY NOT NULL,
+              recordingID TEXT NOT NULL REFERENCES recordings(id),
+              source TEXT NOT NULL CHECK(source IN ('microphone', 'system')),
+              start DOUBLE NOT NULL, end DOUBLE NOT NULL, text TEXT NOT NULL
+            );
+            CREATE INDEX local_transcripts_recording ON local_transcripts(recordingID, start);
+            """)
       }
       try migrator.migrate(database)
       workspaceID = try database.read { db in
@@ -80,20 +94,24 @@ public final class LocalRecordingStore: @unchecked Sendable {
   public func list() throws -> [Recording] {
     try database.read { db in
       try Row.fetchAll(db, sql: "SELECT * FROM recordings ORDER BY startedAt DESC").map {
-        Recording(id: $0["id"], startedAt: $0["startedAt"], status: $0["status"], systemAudio: $0["systemAudio"])
+        Recording(
+          id: $0["id"], startedAt: $0["startedAt"], status: $0["status"], systemAudio: $0["systemAudio"],
+          transcriptStatus: $0["transcriptStatus"])
       }
     }
   }
 
   public func start(systemAudio: Bool, at date: Date = Date()) throws -> Recording {
-    let recording = Recording(id: UUID().uuidString, startedAt: date, status: "recording", systemAudio: systemAudio)
+    let recording = Recording(
+      id: UUID().uuidString, startedAt: date, status: "recording", systemAudio: systemAudio,
+      transcriptStatus: "not_requested")
     try Self.privateDirectory(directory(for: recording))
     try database.write { db in
       guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM recordings WHERE status = 'recording'") == 0 else {
         throw Failure.workspaceInUse
       }
       try db.execute(
-        sql: "INSERT INTO recordings VALUES (?, ?, ?, ?)",
+        sql: "INSERT INTO recordings (id, startedAt, status, systemAudio) VALUES (?, ?, ?, ?)",
         arguments: [recording.id, recording.startedAt, recording.status, recording.systemAudio])
     }
     return recording
@@ -101,6 +119,60 @@ public final class LocalRecordingStore: @unchecked Sendable {
 
   public func directory(for recording: Recording) -> URL {
     root.appendingPathComponent(recording.id, isDirectory: true)
+  }
+
+  public struct Transcript: Identifiable, Sendable, Codable, Equatable {
+    public let id: String
+    public let source: String
+    public let start: Double
+    public let end: Double
+    public let text: String
+    public init(id: String, source: String, start: Double, end: Double, text: String) {
+      self.id = id
+      self.source = source
+      self.start = start
+      self.end = end
+      self.text = text
+    }
+  }
+
+  public enum TranscriptStatus: String { case transcribing, completed, failed }
+
+  public func setTranscriptStatus(_ status: TranscriptStatus, for recording: Recording) throws {
+    try database.write { db in
+      try db.execute(
+        sql: "UPDATE recordings SET transcriptStatus = ? WHERE id = ?",
+        arguments: [status.rawValue, recording.id])
+      guard db.changesCount == 1 else { throw Failure.recordingNotActive }
+    }
+  }
+
+  public func appendTranscript(_ segment: Transcript, to recording: Recording) throws {
+    guard ["microphone", "system"].contains(segment.source),
+      segment.start.isFinite, segment.end.isFinite, segment.start >= 0, segment.end >= segment.start,
+      !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { throw Failure.invalidPCM }
+    try database.write { db in
+      guard
+        try String.fetchOne(
+          db, sql: "SELECT transcriptStatus FROM recordings WHERE id = ?",
+          arguments: [recording.id]) == "transcribing"
+      else { throw Failure.recordingNotActive }
+      try db.execute(
+        sql: "INSERT INTO local_transcripts VALUES (?, ?, ?, ?, ?, ?)",
+        arguments: [segment.id, recording.id, segment.source, segment.start, segment.end, segment.text])
+    }
+  }
+
+  public func transcript(for recording: Recording) throws -> [Transcript] {
+    try database.read { db in
+      try Row.fetchAll(
+        db, sql: "SELECT * FROM local_transcripts WHERE recordingID = ? ORDER BY start, source, id",
+        arguments: [recording.id]
+      ).map {
+        Transcript(id: $0["id"], source: $0["source"], start: $0["start"], end: $0["end"], text: $0["text"])
+      }
+    }
   }
 
   public func finish(_ recording: Recording, interrupted: Bool = false, needsRepair: Bool = false) throws {
@@ -113,6 +185,10 @@ public final class LocalRecordingStore: @unchecked Sendable {
   }
 
   private func recoverInterruptedRecordings() throws {
+    try database.write { db in
+      try db.execute(
+        sql: "UPDATE recordings SET transcriptStatus = 'interrupted' WHERE transcriptStatus = 'transcribing'")
+    }
     for recording in try list() where recording.status == "recording" {
       let files = try FileManager.default.contentsOfDirectory(
         at: directory(for: recording), includingPropertiesForKeys: nil)

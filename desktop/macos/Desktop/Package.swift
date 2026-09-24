@@ -13,22 +13,33 @@ let testBundleFrameworkSearchPath = LinkerSetting.unsafeFlags([
 
 let package: Package
 if ProcessInfo.processInfo.environment["OMI_LOCAL_BUILD"] == "1" {
-  let selected = ["LocalApp", "AudioCaptureService.swift", "SystemAudioCaptureService.swift", "DefaultsKey.swift"]
+  let selected = [
+    "LocalApp", "AudioCaptureService.swift", "SystemAudioCaptureService.swift", "DefaultsKey.swift",
+    "LocalTranscriptionService.swift", "Transcription",
+  ]
   let sourceRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Sources")
   let excluded = try FileManager.default.contentsOfDirectory(atPath: sourceRoot.path).filter { !selected.contains($0) }
   package = Package(
     name: "Omi Local",
     platforms: [.macOS("14.0")],
     products: [.executable(name: "OmiLocal", targets: ["OmiLocal"])],
-    dependencies: [.package(path: "../LocalCore")],
+    dependencies: [
+      .package(path: "../LocalCore"),
+      .package(
+        url: "https://github.com/FluidInference/FluidAudio.git", revision: "19600a485baa4998812e4654b70d2bab8f2c9949"),
+    ],
     targets: [
       .executableTarget(
         name: "OmiLocal",
-        dependencies: [.product(name: "OmiLocalCore", package: "LocalCore")],
+        dependencies: [
+          .product(name: "OmiLocalCore", package: "LocalCore"), .product(name: "FluidAudio", package: "FluidAudio"),
+        ],
         path: "Sources",
         exclude: excluded,
         sources: selected,
-        swiftSettings: [.unsafeFlags(["-strict-concurrency=complete", "-warnings-as-errors"])]
+        swiftSettings: [
+          .define("OMI_LOCAL_BUILD"), .unsafeFlags(["-strict-concurrency=complete", "-warnings-as-errors"]),
+        ]
       )
     ],
     swiftLanguageModes: [.v6]

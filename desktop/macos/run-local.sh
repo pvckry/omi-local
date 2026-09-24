@@ -18,10 +18,14 @@ if [[ "$OMI_LOCAL_SIGN_IDENTITY" == "-" ]]; then
 fi
 
 app="$PWD/Desktop/.build-local/omi-local.app"
-if pgrep -f "^${app}/Contents/MacOS/OmiLocal( |$)" >/dev/null; then
-  echo 'Quit this Omi Local development instance before replacing its signed bundle.' >&2
-  exit 1
-fi
+# Inspect mapped executables, not argv: a direct/sandboxed launch may use a
+# relative path and must still prevent replacing its running signed bundle.
+while IFS= read -r local_pid; do
+  if lsof -a -p "$local_pid" -d txt -Fn 2>/dev/null | grep -Fx "n$app/Contents/MacOS/OmiLocal" >/dev/null; then
+    echo 'Quit this Omi Local development instance before replacing its signed bundle.' >&2
+    exit 1
+  fi
+done < <(pgrep -x OmiLocal || true)
 export OMI_LOCAL_BUILD=1
 # Keep the upstream lockfile intact: this manifest intentionally has fewer dependencies.
 saved_lock="$(mktemp)"

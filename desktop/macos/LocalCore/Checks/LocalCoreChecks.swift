@@ -167,6 +167,8 @@ func expectFailure<T>(_ expression: @autoclosure () throws -> T, _ check: (Error
 @main
 struct LocalCoreChecks {
   static func main() async throws {
+    try LocalTranscriptChecks().run()
+    try LocalTranscriptChecks().checkMigration()
     try LocalRecordingChecks().run()
     try await LocalRecordingChecks().checkBufferedTail()
     let checks = DeviceOnlyCompletionChecks()

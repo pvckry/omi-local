@@ -2,7 +2,7 @@
 
 This fork is being adapted into an account-free, local macOS recorder using the current native Omi app. The intended scope is persistent microphone/system-audio capture, local transcription and speaker diarization, and local CLI/API access, with no Omi login, subscriptions, telemetry or automatic updates.
 
-**A minimal local recording app now builds and runs.** Its separate native executable excludes login/OAuth, subscriptions, telemetry and updater SDKs, and saves microphone/system audio locally. It is still a development build: transcription, diarization, meeting triggers and local CLI/API/MCP access are not connected yet. The full upstream app remains cloud-dependent. Use the dedicated `run-local.sh` instructions below, not upstream setup.
+**A minimal local recording app now builds and runs.** Its separate native executable excludes login/OAuth, subscriptions, telemetry and updater SDKs, and saves microphone/system audio and English Parakeet transcripts locally. Model setup is explicit, and inference works without network access. It is still a development build: diarization, meeting triggers, the full Omi interface and local CLI/API/MCP access are not connected yet. The full upstream app remains cloud-dependent. Use the dedicated `run-local.sh` instructions below, not upstream setup.
 
 See [implementation status and verification](LOCAL_ONLY.md). The upstream documentation below describes upstream Omi and includes cloud-dependent setup instructions.
 

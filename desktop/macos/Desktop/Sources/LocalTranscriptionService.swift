@@ -32,14 +32,14 @@ private final class MusicTally: NSObject, SNResultsObserving {
 ///
 /// Drop-in alternative to the cloud `TranscriptionService` for the desktop mono path: it accepts the
 /// *same* 16 kHz mono Int16 little-endian PCM the WebSocket path receives, accumulates it into fixed
-/// windows, transcribes each window locally, and emits `TranscriptionService.BackendSegment` so the
+/// windows, transcribes each window locally, and emits `SpeechTranscriptSegment` so the
 /// existing UI / DB pipeline (`handleBackendSegments`) is unchanged.
 ///
 /// Enabled via `OMI_LOCAL_STT=1` (or `defaults write <bundle> useLocalSTT -bool true`). No network,
 /// no Deepgram. Model weights (~600 MB–1.2 GB) download from HuggingFace on first run and are cached.
 final class LocalTranscriptionService: @unchecked Sendable {
 
-  typealias SegmentsHandler = @MainActor ([TranscriptionService.BackendSegment]) -> Void
+  typealias SegmentsHandler = @MainActor ([SpeechTranscriptSegment]) -> Void
 
   private struct DrainSnapshot {
     let manager: AsrManager
@@ -49,7 +49,7 @@ final class LocalTranscriptionService: @unchecked Sendable {
   }
 
   private let language: String
-  /// Source-based diarization: mic = the user ("You"), system audio = another speaker.
+  /// Source attribution for upstream compatibility; this does not separate individual speakers.
   private let isUser: Bool
   private let speakerLabel: String
   private let speakerId: Int
@@ -106,6 +106,41 @@ final class LocalTranscriptionService: @unchecked Sendable {
   private var recentFrameRMS: [Float] = []
 
   private var pumpTask: Task<Void, Never>?
+  private var onFailure: (@MainActor (Error) -> Void)?
+  private var failure: Error?
+  private var maximumBufferedSamples: Int?
+
+  enum Failure: LocalizedError {
+    case bufferFull, notReady
+    var errorDescription: String? {
+      switch self {
+      case .bufferFull: "Local transcription fell more than 30 seconds behind. Saved audio is retained."
+      case .notReady: "The local transcription model is not ready."
+      }
+    }
+  }
+
+  /// The account-free app prepares models before opening capture. This entry point
+  /// never downloads weights and applies a 30-second buffer limit per source.
+  func startPrepared(
+    manager: AsrManager, onSegments: @escaping SegmentsHandler,
+    onFailure: @escaping @MainActor (Error) -> Void
+  ) {
+    self.onSegments = onSegments
+    self.onFailure = onFailure
+    lock.withLock {
+      asrManager = manager
+      isReady = true
+      maximumBufferedSamples = 30 * sampleRate
+    }
+    startPump()
+  }
+
+  func finishChecked() async throws {
+    guard lock.withLock({ isReady }) else { throw Failure.notReady }
+    await finish()
+    if let failure = lock.withLock({ failure }) { throw failure }
+  }
 
   init(language: String = "en", isUser: Bool = true) {
     self.language = language
@@ -117,49 +152,56 @@ final class LocalTranscriptionService: @unchecked Sendable {
   /// Begin loading the model (async) and start the periodic flush loop.
   /// `onModelLoadFailed` fires once if the model can't load, so the caller can fall back
   /// to cloud transcription instead of recording into a void.
-  func start(onSegments: @escaping SegmentsHandler, onModelLoadFailed: (@MainActor () -> Void)? = nil) {
-    self.onSegments = onSegments
-    self.onModelLoadFailed = onModelLoadFailed
+  #if !OMI_LOCAL_BUILD
+    func start(onSegments: @escaping SegmentsHandler, onModelLoadFailed: (@MainActor () -> Void)? = nil) {
+      self.onSegments = onSegments
+      self.onModelLoadFailed = onModelLoadFailed
 
-    Task { [weak self] in
-      guard let self else { return }
-      do {
-        // Test hook: force a model-load failure to exercise the cloud fallback path.
-        // Toggle with env OMI_FORCE_PARAKEET_FAIL=1 or `defaults write <bundle> forceParakeetFail -bool true`.
-        if ProcessInfo.processInfo.environment["OMI_FORCE_PARAKEET_FAIL"] == "1"
-          || UserDefaults.standard.bool(forKey: "forceParakeetFail")
-        {
-          throw NSError(
-            domain: "LocalTranscriptionService", code: -1,
-            userInfo: [NSLocalizedDescriptionKey: "forced model-load failure (OMI_FORCE_PARAKEET_FAIL)"])
-        }
-        // v2 = English-only (better recall); v3 = 25 European languages.
-        let version: AsrModelVersion = self.language.hasPrefix("en") ? .v2 : .v3
-        let started = Date()
-        let models = try await AsrModels.downloadAndLoad(version: version)
-        let manager = AsrManager()
-        try await manager.loadModels(models)
-        self.lock.withLock {
-          self.asrManager = manager
-          self.isReady = true
-        }
-        log(
-          "LocalTranscriptionService: Parakeet \(version) ready in \(String(format: "%.1f", Date().timeIntervalSince(started)))s"
-        )
-      } catch {
-        logError("LocalTranscriptionService: model load failed", error: error)
-        if self.onModelLoadFailed != nil {
-          await MainActor.run { self.onModelLoadFailed?() }
+      Task { [weak self] in
+        guard let self else { return }
+        do {
+          // Test hook: force a model-load failure to exercise the cloud fallback path.
+          // Toggle with env OMI_FORCE_PARAKEET_FAIL=1 or `defaults write <bundle> forceParakeetFail -bool true`.
+          if ProcessInfo.processInfo.environment["OMI_FORCE_PARAKEET_FAIL"] == "1"
+            || UserDefaults.standard.bool(forKey: "forceParakeetFail")
+          {
+            throw NSError(
+              domain: "LocalTranscriptionService", code: -1,
+              userInfo: [NSLocalizedDescriptionKey: "forced model-load failure (OMI_FORCE_PARAKEET_FAIL)"])
+          }
+          // v2 = English-only (better recall); v3 = 25 European languages.
+          let version: AsrModelVersion = self.language.hasPrefix("en") ? .v2 : .v3
+          let started = Date()
+          let models = try await AsrModels.downloadAndLoad(version: version)
+          let manager = AsrManager()
+          try await manager.loadModels(models)
+          self.lock.withLock {
+            self.asrManager = manager
+            self.isReady = true
+          }
+          log(
+            "LocalTranscriptionService: Parakeet \(version) ready in \(String(format: "%.1f", Date().timeIntervalSince(started)))s"
+          )
+        } catch {
+          logError("LocalTranscriptionService: model load failed", error: error)
+          if self.onModelLoadFailed != nil {
+            await MainActor.run { self.onModelLoadFailed?() }
+          }
         }
       }
-    }
 
+      startPump()
+    }
+  #endif
+
+  private func startPump() {
     pumpTask = Task { [weak self] in
       while !Task.isCancelled {
-        // 0.5 s, not 1 s: with pause-closed windows the tick is now the floor on how
-        // soon a finished utterance can be transcribed, not just a poll for a full window.
         try? await Task.sleep(nanoseconds: 500_000_000)
-        await self?.drain(force: false)
+        guard !Task.isCancelled, let self,
+          self.lock.withLock({ self.acceptingAudio })
+        else { return }
+        await self.drain(force: false)
       }
     }
   }
@@ -169,15 +211,22 @@ final class LocalTranscriptionService: @unchecked Sendable {
     let floats = Self.int16ToFloat32(data)
     guard !floats.isEmpty else { return }
     let frameRMS = Self.rms(floats)
-    lock.withLock {
+    let overflow = lock.withLock { () -> Bool in
       if acceptingAudio {
+        if let limit = maximumBufferedSamples, floats.count > limit - buffer.count {
+          acceptingAudio = false
+          failure = Failure.bufferFull
+          return true
+        }
         buffer.append(contentsOf: floats)
         recentFrameRMS.append(frameRMS)
         if recentFrameRMS.count > Self.roomLevelHistoryFrames {
           recentFrameRMS.removeFirst(recentFrameRMS.count - Self.roomLevelHistoryFrames)
         }
       }
+      return false
     }
+    if overflow { Task { @MainActor [weak self] in self?.onFailure?(Failure.bufferFull) } }
   }
 
   /// Fire-and-forget stop. Prefer `await finish()` whenever the session lifecycle allows it —
@@ -186,38 +235,23 @@ final class LocalTranscriptionService: @unchecked Sendable {
   /// right after (e.g. the 4-hour restart path) can still race; it exists for teardown sites
   /// that don't have an async context.
   func stop() {
-    pumpTask?.cancel()
-    pumpTask = nil
     lock.withLock { acceptingAudio = false }
-    // Strong `self` (not weak): the caller (AppState) nils its reference immediately after
-    // stop(), so a weak capture could deallocate the service before the final tail is
-    // transcribed. The strong reference keeps it alive until drainAll() finishes.
-    Task { await self.drainAll() }
+    Task { await self.finish() }
   }
 
-  /// Awaitable flush. Cancels the pump and transcribes ALL remaining audio, delivering the
-  /// final segments (synchronously on the main actor) before returning. Callers must `await`
-  /// this before clearing/rotating the session so the last words persist to the right
-  /// conversation instead of racing the async drain.
+  /// Wait for in-flight inference rather than cancelling it or timing out after
+  /// five seconds. Every remaining bounded window is delivered before returning.
   func finish() async {
-    pumpTask?.cancel()
-    pumpTask = nil
-    // Stop buffering new audio first so the single drain below captures the complete buffer —
-    // capture can still be running (finishConversation rotation) and would otherwise append
-    // past the drain snapshot.
     lock.withLock { acceptingAudio = false }
+    await pumpTask?.value
+    pumpTask = nil
     await drainAll()
   }
 
-  /// Flush every remaining buffered sample (called on stop). Waits out any in-flight window
-  /// flush first, then transcribes the sub-window tail so the last words aren't dropped.
   private func drainAll() async {
-    for _ in 0..<50 {
-      let busy = lock.withLock { isFlushing }
-      if !busy { break }
-      try? await Task.sleep(nanoseconds: 100_000_000)
+    while lock.withLock({ isReady && !buffer.isEmpty }) {
+      await drain(force: true)
     }
-    await drain(force: true)
   }
 
   /// Transcribe one window (or whatever remains, when `force`) and emit a segment.
@@ -249,7 +283,7 @@ final class LocalTranscriptionService: @unchecked Sendable {
         guard ready else { return nil }
         // A pause-closed window takes the whole buffer: the boundary is the silence itself,
         // so leaving a remainder would just split the next utterance at an arbitrary point.
-        let take = (force || endpointed) ? available : windowSamples
+        let take = min(available, windowSamples)
         let window = Array(buffer.prefix(take))
         buffer.removeFirst(take)
         let startSec = emittedSeconds
@@ -300,7 +334,7 @@ final class LocalTranscriptionService: @unchecked Sendable {
         text.removeFirst()
       }
 
-      let segment = TranscriptionService.BackendSegment(
+      let segment = SpeechTranscriptSegment(
         id: UUID().uuidString,
         text: text,
         speaker: speakerLabel,
@@ -322,7 +356,12 @@ final class LocalTranscriptionService: @unchecked Sendable {
           format: "LocalTranscriptionService[%@]: %.1fs rms=%.4f conf=%.2f rtfx=%.0fx → %@",
           isUser ? "mic" : "sys", snapshot.durSec, rms, result.confidence, result.rtfx, text))
     } catch {
+      lock.withLock {
+        failure = error
+        acceptingAudio = false
+      }
       logError("LocalTranscriptionService: transcribe failed", error: error)
+      if let onFailure { Task { @MainActor in onFailure(error) } }
     }
   }
 
