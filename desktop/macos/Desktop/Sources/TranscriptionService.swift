@@ -27,10 +27,7 @@ class TranscriptionService: @unchecked Sendable {
   }
 
   /// Translation from backend (lang code + translated text)
-  struct BackendTranslation: Decodable {
-    let lang: String
-    let text: String
-  }
+  typealias BackendTranslation = SpeechTranscriptTranslation
 
   /// The backend-selected provider for one pre-recorded PTT request.
   struct BatchTranscriptionResult: Equatable {
@@ -41,17 +38,7 @@ class TranscriptionService: @unchecked Sendable {
 
   /// Transcript segment from Python backend
   /// Matches `models.transcript_segment.TranscriptSegment` on the backend
-  struct BackendSegment: Decodable {
-    let id: String?
-    let text: String
-    let speaker: String?  // e.g. "SPEAKER_00"
-    let speaker_id: Int?
-    let is_user: Bool
-    let person_id: String?
-    let start: Double
-    let end: Double
-    let translations: [BackendTranslation]?
-  }
+  typealias BackendSegment = SpeechTranscriptSegment
 
   /// Message event (from `/v4/listen` only — not used by PTT transcribe-stream)
   /// JSON object with a `type` field indicating the event kind
@@ -827,6 +814,9 @@ extension TranscriptionService {
 private struct PythonTranscribeResponse: Decodable {
   let transcript: String
   let language: String?
+  // Preserve the existing Python response field names.
+  // swift-format-ignore: AlwaysUseLowerCamelCase
   let stt_provider: String?
+  // swift-format-ignore: AlwaysUseLowerCamelCase
   let stt_model: String?
 }

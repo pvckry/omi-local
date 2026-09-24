@@ -48,7 +48,16 @@ extension AppState {
     // Paywall hard-stop: every code path that enables the mic + WS streaming
     // funnels through here, including auto-restart from sleep and toggle
     // shortcuts. Refuse to start and surface the upgrade popup.
-    if blockIfPaywalled() { return }
+    if LocalOnlyConfiguration.isEnabled {
+      guard Self.isAppleSilicon else {
+        showAlert(
+          title: "Local Transcription Unavailable",
+          message: "This build requires Apple Silicon for on-device transcription.")
+        return
+      }
+    } else if blockIfPaywalled() {
+      return
+    }
 
     // Use provided source or fall back to current setting
     let effectiveSource = source ?? audioSource
@@ -95,12 +104,15 @@ extension AppState {
         userDefaultsForceCloud: UserDefaults.standard.bool(forKey: "forceCloudSTT")
       )
       let preferLocalOnBasic =
-        SubscriptionEntitlementService.shared.cachedDecisionForManagedProactivity() == .planGated
-      Task { _ = await SubscriptionEntitlementService.shared.snapshot() }
+        LocalOnlyConfiguration.isEnabled
+        || SubscriptionEntitlementService.shared.cachedDecisionForManagedProactivity() == .planGated
+      if !LocalOnlyConfiguration.isEnabled {
+        Task { _ = await SubscriptionEntitlementService.shared.snapshot() }
+      }
       sttSession.beginRecording(
         audioSource: effectiveSource,
         isAppleSilicon: Self.isAppleSilicon,
-        debugForceCloud: debugForceCloud,
+        debugForceCloud: LocalOnlyConfiguration.isEnabled ? false : debugForceCloud,
         preferLocalOnBasic: preferLocalOnBasic
       )
       let clientConversationId = UUID().uuidString.lowercased()
@@ -275,7 +287,7 @@ extension AppState {
             inputDeviceName: recordingInputDeviceName,
             clientConversationId: sttSession.useLocalSTT ? nil : clientConversationId,
             conversationRole: sessionConversationRole,
-            finalizationStrategy: sttSession.useLocalSTT ? .localSegments : .cloudReconcile,
+            finalizationStrategy: LocalOnlyConfiguration.finalizationStrategy(usesLocalSTT: sttSession.useLocalSTT),
             captureAttemptId: captureAttempt?.attemptId
           )
           // Stale after creation: leave the orphaned row to the crash-safe
@@ -995,6 +1007,16 @@ extension AppState {
   /// broken model on every recording.
   @MainActor
   func handleLocalSTTModelLoadFailure() {
+    if LocalOnlyConfiguration.isEnabled {
+      guard isTranscribing else { return }
+      captureAttempt?.noteErrorTerminal()
+      stopTranscription(finalizationReason: .sttFallback)
+      showAlert(
+        title: "Local Transcription Unavailable",
+        message: "The speech model could not load. Recording stopped; cloud fallback is disabled."
+      )
+      return
+    }
     guard sttSession.canBeginLocalToCloudFallback(isTranscribing: isTranscribing) else { return }
     sttSession.beginLocalToCloudFallback()
     log("Transcription: Parakeet model load failed — falling back to cloud STT")
@@ -1324,7 +1346,7 @@ extension AppState {
           inputDeviceName: recordingInputDeviceName,
           clientConversationId: nextClientConversationId,
           conversationRole: sessionConversationRole,
-          finalizationStrategy: sttSession.useLocalSTT ? .localSegments : .cloudReconcile,
+          finalizationStrategy: LocalOnlyConfiguration.finalizationStrategy(usesLocalSTT: sttSession.useLocalSTT),
           captureAttemptId: await MainActor.run(body: { self.captureAttempt?.attemptId })
         )
         let sessionStillCurrent = await MainActor.run { () -> Bool in

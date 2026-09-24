@@ -387,6 +387,13 @@ class SystemAudioCaptureService: @unchecked Sendable {
     log("SystemAudioCapture: Stopped capturing")
   }
 
+  /// Wait for queued HAL teardown before closing the recording sink.
+  func waitForPhysicalStop() async {
+    await withCheckedContinuation { continuation in
+      audioQueue.async { continuation.resume() }
+    }
+  }
+
   /// Check if currently capturing
   var capturing: Bool {
     return isCapturing
