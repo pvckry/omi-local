@@ -116,6 +116,24 @@ actor ConversationFinalizationService {
       "ConversationFinalization: Finalizing session \(sessionId) strategy=\(strategy.rawValue) reason=\(reason.rawValue)"
     )
 
+    // Device-owned rows bypass every cloud/context/screenshot side effect. The
+    // persisted strategy remains authoritative after restart or build changes.
+    if strategy == .deviceOnly {
+      do {
+        _ = try await TranscriptionStorage.shared.markSessionCompletedOnDevice(id: sessionId)
+      } catch {
+        // Do not use the upstream failure helper: it reports remote diagnostics.
+        do {
+          try await TranscriptionStorage.shared.markSessionFailed(id: sessionId, error: "device_only_completion_failed")
+          try await TranscriptionStorage.shared.incrementRetryCount(id: sessionId)
+        } catch {
+          log("Device-only completion: could not persist retry state for session \(sessionId)")
+        }
+        log("Device-only completion failed for session \(sessionId); transcript remains local")
+      }
+      return
+    }
+
     do {
       await storeMeetingContextIfEnabled(for: session)
       guard try await TranscriptionStorage.shared.markSessionUploading(id: sessionId) else {
@@ -123,6 +141,8 @@ actor ConversationFinalizationService {
       }
       let meetingTreatmentEligible: Bool?
       switch strategy {
+      case .deviceOnly:
+        return  // handled above, before any network-capable operation
       case .localSegments:
         meetingTreatmentEligible = try await uploadLocalSegments(sessionId: sessionId)
       case .cloudReconcile:

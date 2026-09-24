@@ -18,6 +18,7 @@ let package = Package(
     .macOS("14.0")
   ],
   dependencies: [
+    .package(path: "../LocalCore"),
     .package(url: "https://github.com/firebase/firebase-ios-sdk.git", from: "11.0.0"),
     .package(url: "https://github.com/PostHog/posthog-ios.git", from: "3.0.0"),
     .package(url: "https://github.com/getsentry/sentry-cocoa.git", exact: "8.58.0"),
@@ -75,6 +76,7 @@ let package = Package(
     .executableTarget(
       name: "Omi Computer",
       dependencies: [
+        .product(name: "OmiLocalCore", package: "LocalCore"),
         "ObjCExceptionCatcher",
         "CWebP",
         "OmiSupport",

@@ -13,6 +13,8 @@ enum TranscriptionSessionStatus: String, Codable, CaseIterable {
 }
 
 enum TranscriptionFinalizationStrategy: String, Codable, CaseIterable {
+  /// Device-owned transcript: must never enter cloud finalization, including on retry.
+  case deviceOnly = "device_only"
   case localSegments = "local_segments"
   case cloudReconcile = "cloud_reconcile"
 }
@@ -701,7 +703,9 @@ extension TranscriptionSessionRecord {
     segments: [TranscriptionSegmentRecord],
     transcriptIncluded: Bool? = nil
   ) -> ServerConversation? {
-    guard let backendId = backendId else { return nil }
+    guard let backendId = backendId ?? (finalizationStrategy == .deviceOnly ? clientConversationId : nil) else {
+      return nil
+    }
 
     let decoder = JSONDecoder()
 

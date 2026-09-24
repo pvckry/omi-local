@@ -1,4 +1,5 @@
 import Foundation
+import OmiLocalCore
 @preconcurrency import GRDB
 
 private func withConversationCacheScope<T>(
@@ -78,7 +79,8 @@ actor TranscriptionStorage {
       timezone: timezone,
       inputDeviceName: inputDeviceName,
       status: .recording,
-      clientConversationId: clientConversationId,
+      clientConversationId: finalizationStrategy == .deviceOnly
+        ? (clientConversationId ?? "local-\(UUID().uuidString.lowercased())") : clientConversationId,
       conversationRole: conversationRole,
       finalizationStrategy: finalizationStrategy,
       captureAttemptId: captureAttemptId
@@ -113,6 +115,7 @@ actor TranscriptionStorage {
       }
 
       let now = Date()
+      let isDeviceOnly = (strategy ?? record.finalizationStrategy) == .deviceOnly
       if reason == .crashRecovery {
         // Restart time is not capture evidence. Resolve the end in the same
         // transaction as the transition so retries cannot extend the recording.
@@ -138,9 +141,9 @@ actor TranscriptionStorage {
         }
         // The upload format has whole-second precision. Retain the existing
         // one-second minimum so a subsecond segment does not encode an empty interval.
-        record.finishedAt = max(captureEnd, record.startedAt.addingTimeInterval(1.0))
+        record.finishedAt = isDeviceOnly ? captureEnd : max(captureEnd, record.startedAt.addingTimeInterval(1.0))
       } else {
-        record.finishedAt = max(now, record.startedAt.addingTimeInterval(1.0))
+        record.finishedAt = isDeviceOnly ? now : max(now, record.startedAt.addingTimeInterval(1.0))
       }
       record.status = .pendingUpload
       if let strategy {
@@ -227,6 +230,15 @@ actor TranscriptionStorage {
       log("TranscriptionStorage: Marked session \(id) finalization in progress")
     }
     return claimed
+  }
+
+  /// Complete the existing local row without claiming a server received it.
+  @discardableResult
+  func markSessionCompletedOnDevice(id: Int64) async throws -> Bool {
+    let db = try await ensureInitialized()
+    return try await db.write { database in
+      try DeviceOnlyCompletion.complete(in: database, sessionID: id, now: Date())
+    }
   }
 
   /// Mark session as completed (uploaded successfully)
@@ -1100,7 +1112,11 @@ actor TranscriptionStorage {
     return try await db.read { database in
       var query =
         TranscriptionSessionRecord
-        .filter(Column("backendSynced") == true)
+        .filter(
+          Column("backendSynced") == true
+            || (Column("finalizationStrategy") == TranscriptionFinalizationStrategy.deviceOnly.rawValue
+              && Column("status") == TranscriptionSessionStatus.completed.rawValue)
+        )
         .filter(Column("deleted") == false)
         .filter(Column("discarded") == false)
 
@@ -1139,7 +1155,11 @@ actor TranscriptionStorage {
     return try await db.read { database in
       let sessions =
         try TranscriptionSessionRecord
-        .filter(Column("backendSynced") == true)
+        .filter(
+          Column("backendSynced") == true
+            || (Column("finalizationStrategy") == TranscriptionFinalizationStrategy.deviceOnly.rawValue
+              && Column("status") == TranscriptionSessionStatus.completed.rawValue)
+        )
         .filter(Column("deleted") == false)
         .filter(Column("discarded") == false)
         .filter(Column("source") == ConversationSource.omi.rawValue)
@@ -1159,7 +1179,18 @@ actor TranscriptionStorage {
 
   /// Read the richest cached projection for a detail screen.
   func getCachedConversation(id: String) async throws -> ServerConversation? {
-    guard let session = try await getSessionByBackendId(id), let sessionId = session.id else {
+    let db = try await ensureInitialized()
+    let session = try await db.read { database in
+      try TranscriptionSessionRecord
+        .filter(
+          Column("backendId") == id
+            || (Column("finalizationStrategy") == TranscriptionFinalizationStrategy.deviceOnly.rawValue
+              && Column("clientConversationId") == id)
+        )
+        .filter(Column("deleted") == false)
+        .fetchOne(database)
+    }
+    guard let session, let sessionId = session.id else {
       return nil
     }
     let segments = try await getSegments(sessionId: sessionId)
@@ -1173,7 +1204,11 @@ actor TranscriptionStorage {
     return try await db.read { database in
       var query =
         TranscriptionSessionRecord
-        .filter(Column("backendSynced") == true)
+        .filter(
+          Column("backendSynced") == true
+            || (Column("finalizationStrategy") == TranscriptionFinalizationStrategy.deviceOnly.rawValue
+              && Column("status") == TranscriptionSessionStatus.completed.rawValue)
+        )
         .filter(Column("deleted") == false)
         .filter(Column("discarded") == false)
 
@@ -1195,7 +1230,11 @@ actor TranscriptionStorage {
     let db = try await ensureInitialized()
     return try await db.read { database in
       try TranscriptionSessionRecord
-        .filter(Column("backendSynced") == true)
+        .filter(
+          Column("backendSynced") == true
+            || (Column("finalizationStrategy") == TranscriptionFinalizationStrategy.deviceOnly.rawValue
+              && Column("status") == TranscriptionSessionStatus.completed.rawValue)
+        )
         .filter(Column("deleted") == false)
         .filter(Column("discarded") == false)
         .filter(Column("source") == ConversationSource.omi.rawValue)
