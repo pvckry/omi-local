@@ -166,7 +166,9 @@ func expectFailure<T>(_ expression: @autoclosure () throws -> T, _ check: (Error
 
 @main
 struct LocalCoreChecks {
-  static func main() throws {
+  static func main() async throws {
+    try LocalRecordingChecks().run()
+    try await LocalRecordingChecks().checkBufferedTail()
     let checks = DeviceOnlyCompletionChecks()
     try checks.testCompletionPreservesTranscriptIdentityAndCapturedDurationWithoutClaimingSync()
     print("PASS: local completion preserves identity, transcript and capture duration")
